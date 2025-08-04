@@ -5,9 +5,12 @@
 #include <iomanip>    // 입출력 포맷 조정
 #include <stdlib.h>   // 동적 메모리 할당, exit 등
 #include <string.h>   // 문자열 처리 함수: strcpy, strcmp, strtok 등
+#include <Windows.h>  // Windows API 함수: fopen_s, fseek 등
+#include <winnt.h>    // PE 파일 구조체 정의
 
-int check_retry_or_end();                                                    //재시도 또는 종료 확인 함수
+int check_retry_or_end();                                                    // 재시도 또는 종료 확인 함수
 int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize); // PE 파일 타입 판별 함수
+void print_pe_structure(const char* filepath); 				                 // PE 파일 구조 출력 함수
 
 #define MAX_PATH 260         // Windows에서 경로의 최대 길이
 #define PE_SIGNATURE_PATH 32 //확장자 최대 길이
@@ -93,6 +96,9 @@ int main() {
 
     FILE* fp = NULL;
     detect_pe_type(input, detected_ext, sizeof(detected_ext));
+
+    print_pe_structure(input);
+
 
     return 0;
 }
@@ -184,4 +190,164 @@ int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize) {
 
     fclose(fp);
     return 1;
+}
+// PE 파일 구조 출력 함수
+void print_pe_structure(const char* filepath) {
+    FILE* fp = NULL;
+    if (fopen_s(&fp, filepath, "rb") != 0 || fp == NULL) {
+        printf("[Error] Cannot open file for PE parsing.\n");
+        return;
+    }
+
+    // 1. DOS_HEADER
+    IMAGE_DOS_HEADER dosHeader;
+    fread(&dosHeader, sizeof(IMAGE_DOS_HEADER), 1, fp);
+    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE) {
+        printf("Not a valid PE file (missing MZ header).\n");
+        fclose(fp);
+        return;
+    }
+    printf("\n\033[1;36m[DOS_HEADER]\033[0m\n");
+    printf("e_magic: 0x%04X\n", dosHeader.e_magic);
+    printf("e_cblp: 0x%04X\n", dosHeader.e_cblp);
+    printf("e_cp: 0x%04X\n", dosHeader.e_cp);
+    printf("e_crlc: 0x%04X\n", dosHeader.e_crlc);
+    printf("e_cparhdr: 0x%04X\n", dosHeader.e_cparhdr);
+    printf("e_minalloc: 0x%04X\n", dosHeader.e_minalloc);
+    printf("e_maxalloc: 0x%04X\n", dosHeader.e_maxalloc);
+    printf("e_ss: 0x%04X\n", dosHeader.e_ss);
+    printf("e_sp: 0x%04X\n", dosHeader.e_sp);
+    printf("e_csum: 0x%04X\n", dosHeader.e_csum);
+    printf("e_ip: 0x%04X\n", dosHeader.e_ip);
+    printf("e_cs: 0x%04X\n", dosHeader.e_cs);
+    printf("e_lfarlc: 0x%04X\n", dosHeader.e_lfarlc);
+    printf("e_ovno: 0x%04X\n", dosHeader.e_ovno);
+    for (int i = 0; i < 4; i++)
+        printf("e_res[%d]: 0x%04X\n", i, dosHeader.e_res[i]);
+    printf("e_oemid: 0x%04X\n", dosHeader.e_oemid);
+    printf("e_oeminfo: 0x%04X\n", dosHeader.e_oeminfo);
+    for (int i = 0; i < 10; i++)
+        printf("e_res2[%d]: 0x%04X\n", i, dosHeader.e_res2[i]);
+    printf("e_lfanew: 0x%08X\n", dosHeader.e_lfanew);
+
+    // 2. DOS_STUB
+    long stub_size = dosHeader.e_lfanew - sizeof(IMAGE_DOS_HEADER);
+    if (stub_size > 0) {
+        unsigned char* dos_stub = (unsigned char*)malloc(stub_size);
+        fread(dos_stub, 1, stub_size, fp);
+        printf("\n\033[1;36m[DOS_STUB]\033[0m\n");
+        printf("Size: %ld bytes\n", stub_size);
+        printf("First 16 bytes: ");
+        for (int i = 0; i < 16 && i < stub_size; i++)
+            printf("%02X ", dos_stub[i]);
+        printf("\n");
+        free(dos_stub);
+    }
+
+    // 3. RICH_HEADER (존재 여부 및 오프셋만)
+    fseek(fp, sizeof(IMAGE_DOS_HEADER), SEEK_SET);
+    int rich_offset = -1;
+    unsigned char buf[4];
+    for (long i = sizeof(IMAGE_DOS_HEADER); i < dosHeader.e_lfanew - 4; i++) {
+        fread(buf, 1, 4, fp);
+        if (memcmp(buf, "Rich", 4) == 0) {
+            rich_offset = (int)i;
+            break;
+        }
+        fseek(fp, i + 1, SEEK_SET);
+    }
+    if (rich_offset != -1) {
+        printf("\n\033[1;36m[RICH_HEADER]\033[0m\n");
+        printf("Found at offset: 0x%X\n", rich_offset);
+    }
+    else {
+        printf("\n\033[1;36m[RICH_HEADER]\033[0m\n");
+        printf("Not found.\n");
+    }
+
+    // 4. NT_HEADER
+    fseek(fp, dosHeader.e_lfanew, SEEK_SET);
+    DWORD pe_sig = 0;
+    fread(&pe_sig, sizeof(DWORD), 1, fp);
+    if (pe_sig != IMAGE_NT_SIGNATURE) {
+        printf("Not a valid PE file (missing PE signature).\n");
+        fclose(fp);
+        return;
+    }
+    printf("\n\033[1;36m[NT_HEADER]\033[0m\n");
+    printf("PE Signature: 0x%08X ('PE\\0\\0')\n", pe_sig);
+
+    // 5. IMAGE_FILE_HEADER
+    IMAGE_FILE_HEADER fileHeader;
+    fread(&fileHeader, sizeof(IMAGE_FILE_HEADER), 1, fp);
+    printf("\n\033[1;36m[IMAGE_FILE_HEADER]\033[0m\n");
+    printf("Machine: 0x%04X\n", fileHeader.Machine);
+    printf("NumberOfSections: %d\n", fileHeader.NumberOfSections);
+    printf("TimeDateStamp: 0x%08X\n", fileHeader.TimeDateStamp);
+    printf("PointerToSymbolTable: 0x%08X\n", fileHeader.PointerToSymbolTable);
+    printf("NumberOfSymbols: %u\n", fileHeader.NumberOfSymbols);
+    printf("SizeOfOptionalHeader: 0x%04X\n", fileHeader.SizeOfOptionalHeader);
+    printf("Characteristics: 0x%04X\n", fileHeader.Characteristics);
+
+    // 6. IMAGE_OPTIONAL_HEADER
+    IMAGE_OPTIONAL_HEADER32 optionalHeader;
+    fread(&optionalHeader, sizeof(IMAGE_OPTIONAL_HEADER32), 1, fp);
+    printf("\n\033[1;36m[IMAGE_OPTIONAL_HEADER32]\033[0m\n");
+    printf("Magic: 0x%04X\n", optionalHeader.Magic);
+    printf("MajorLinkerVersion: %u\n", optionalHeader.MajorLinkerVersion);
+    printf("MinorLinkerVersion: %u\n", optionalHeader.MinorLinkerVersion);
+    printf("SizeOfCode: 0x%08X\n", optionalHeader.SizeOfCode);
+    printf("SizeOfInitializedData: 0x%08X\n", optionalHeader.SizeOfInitializedData);
+    printf("SizeOfUninitializedData: 0x%08X\n", optionalHeader.SizeOfUninitializedData);
+    printf("AddressOfEntryPoint: 0x%08X\n", optionalHeader.AddressOfEntryPoint);
+    printf("BaseOfCode: 0x%08X\n", optionalHeader.BaseOfCode);
+    printf("BaseOfData: 0x%08X\n", optionalHeader.BaseOfData);
+    printf("ImageBase: 0x%08X\n", optionalHeader.ImageBase);
+    printf("SectionAlignment: 0x%08X\n", optionalHeader.SectionAlignment);
+    printf("FileAlignment: 0x%08X\n", optionalHeader.FileAlignment);
+    printf("MajorOperatingSystemVersion: %u\n", optionalHeader.MajorOperatingSystemVersion);
+    printf("MinorOperatingSystemVersion: %u\n", optionalHeader.MinorOperatingSystemVersion);
+    printf("MajorImageVersion: %u\n", optionalHeader.MajorImageVersion);
+    printf("MinorImageVersion: %u\n", optionalHeader.MinorImageVersion);
+    printf("MajorSubsystemVersion: %u\n", optionalHeader.MajorSubsystemVersion);
+    printf("MinorSubsystemVersion: %u\n", optionalHeader.MinorSubsystemVersion);
+    printf("Win32VersionValue: 0x%08X\n", optionalHeader.Win32VersionValue);
+    printf("SizeOfImage: 0x%08X\n", optionalHeader.SizeOfImage);
+    printf("SizeOfHeaders: 0x%08X\n", optionalHeader.SizeOfHeaders);
+    printf("CheckSum: 0x%08X\n", optionalHeader.CheckSum);
+    printf("Subsystem: 0x%04X\n", optionalHeader.Subsystem);
+    printf("DllCharacteristics: 0x%04X\n", optionalHeader.DllCharacteristics);
+    printf("SizeOfStackReserve: 0x%08X\n", optionalHeader.SizeOfStackReserve);
+    printf("SizeOfStackCommit: 0x%08X\n", optionalHeader.SizeOfStackCommit);
+    printf("SizeOfHeapReserve: 0x%08X\n", optionalHeader.SizeOfHeapReserve);
+    printf("SizeOfHeapCommit: 0x%08X\n", optionalHeader.SizeOfHeapCommit);
+    printf("LoaderFlags: 0x%08X\n", optionalHeader.LoaderFlags);
+    printf("NumberOfRvaAndSizes: %u\n", optionalHeader.NumberOfRvaAndSizes);
+
+    // DataDirectory 출력 (일부만)
+    for (int i = 0; i < optionalHeader.NumberOfRvaAndSizes && i < 16; i++) {
+        printf("DataDirectory[%d]: RVA=0x%08X, Size=0x%08X\n",
+            i,
+            optionalHeader.DataDirectory[i].VirtualAddress,
+            optionalHeader.DataDirectory[i].Size);
+    }
+
+    // 7. SECTION_HEADER
+    printf("\n\033[1;36m[SECTION_HEADER]\033[0m\n");
+    for (int i = 0; i < fileHeader.NumberOfSections; i++) {
+        IMAGE_SECTION_HEADER sectionHeader;
+        fread(&sectionHeader, sizeof(IMAGE_SECTION_HEADER), 1, fp);
+        printf("[%d] Name: %.8s\n", i + 1, sectionHeader.Name);
+        printf("    VirtualSize: 0x%08X\n", sectionHeader.Misc.VirtualSize);
+        printf("    VirtualAddress: 0x%08X\n", sectionHeader.VirtualAddress);
+        printf("    SizeOfRawData: 0x%08X\n", sectionHeader.SizeOfRawData);
+        printf("    PointerToRawData: 0x%08X\n", sectionHeader.PointerToRawData);
+        printf("    PointerToRelocations: 0x%08X\n", sectionHeader.PointerToRelocations);
+        printf("    PointerToLinenumbers: 0x%08X\n", sectionHeader.PointerToLinenumbers);
+        printf("    NumberOfRelocations: %u\n", sectionHeader.NumberOfRelocations);
+        printf("    NumberOfLinenumbers: %u\n", sectionHeader.NumberOfLinenumbers);
+        printf("    Characteristics: 0x%08X\n", sectionHeader.Characteristics);
+    }
+
+    fclose(fp);
 }
