@@ -7,6 +7,8 @@
 #include <string.h>   // 문자열 처리 함수: strcpy, strcmp, strtok 등
 #include <Windows.h>  // Windows API 함수: fopen_s, fseek 등
 #include <winnt.h>    // PE 파일 구조체 정의
+#include <conio.h>  // sleep 함수 사용을 위한 헤더 (POSIX 표준)
+#include <stdlib.h>
 
 int check_retry_or_end();                                                    // 재시도 또는 종료 확인 함수
 int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize); // PE 파일 타입 판별 함수
@@ -208,27 +210,49 @@ void print_pe_structure(const char* filepath) {
         return;
     }
     printf("\n\033[1;36m[DOS_HEADER]\033[0m\n");
+    Sleep(1);
     printf("e_magic: 0x%04X\n", dosHeader.e_magic);
+    Sleep(1);
     printf("e_cblp: 0x%04X\n", dosHeader.e_cblp);
+    Sleep(1);
     printf("e_cp: 0x%04X\n", dosHeader.e_cp);
+    Sleep(1);
     printf("e_crlc: 0x%04X\n", dosHeader.e_crlc);
+    Sleep(1);
     printf("e_cparhdr: 0x%04X\n", dosHeader.e_cparhdr);
+    Sleep(1);
     printf("e_minalloc: 0x%04X\n", dosHeader.e_minalloc);
+    Sleep(1);
     printf("e_maxalloc: 0x%04X\n", dosHeader.e_maxalloc);
+    Sleep(1);
     printf("e_ss: 0x%04X\n", dosHeader.e_ss);
+    Sleep(1);
     printf("e_sp: 0x%04X\n", dosHeader.e_sp);
+    Sleep(1);
     printf("e_csum: 0x%04X\n", dosHeader.e_csum);
+    Sleep(1);
     printf("e_ip: 0x%04X\n", dosHeader.e_ip);
+    Sleep(1);
     printf("e_cs: 0x%04X\n", dosHeader.e_cs);
+    Sleep(1);
     printf("e_lfarlc: 0x%04X\n", dosHeader.e_lfarlc);
+    Sleep(1);
     printf("e_ovno: 0x%04X\n", dosHeader.e_ovno);
-    for (int i = 0; i < 4; i++)
+    Sleep(1);
+    for (int i = 0; i < 4; i++) {
         printf("e_res[%d]: 0x%04X\n", i, dosHeader.e_res[i]);
+        Sleep(1);
+    }
     printf("e_oemid: 0x%04X\n", dosHeader.e_oemid);
+    Sleep(1);
     printf("e_oeminfo: 0x%04X\n", dosHeader.e_oeminfo);
-    for (int i = 0; i < 10; i++)
+    Sleep(1);
+    for (int i = 0; i < 10; i++) {
         printf("e_res2[%d]: 0x%04X\n", i, dosHeader.e_res2[i]);
+        Sleep(1);
+    }
     printf("e_lfanew: 0x%08X\n", dosHeader.e_lfanew);
+    Sleep(1);
 
     // 2. DOS_STUB
     long stub_size = dosHeader.e_lfanew - sizeof(IMAGE_DOS_HEADER);
@@ -236,10 +260,15 @@ void print_pe_structure(const char* filepath) {
         unsigned char* dos_stub = (unsigned char*)malloc(stub_size);
         fread(dos_stub, 1, stub_size, fp);
         printf("\n\033[1;36m[DOS_STUB]\033[0m\n");
+        Sleep(1);
         printf("Size: %ld bytes\n", stub_size);
+        Sleep(1);
         printf("First 16 bytes: ");
-        for (int i = 0; i < 16 && i < stub_size; i++)
+        Sleep(1);
+        for (int i = 0; i < 16 && i < stub_size; i++) {
             printf("%02X ", dos_stub[i]);
+            Sleep(1);
+        }
         printf("\n");
         free(dos_stub);
     }
@@ -258,11 +287,15 @@ void print_pe_structure(const char* filepath) {
     }
     if (rich_offset != -1) {
         printf("\n\033[1;36m[RICH_HEADER]\033[0m\n");
+        Sleep(1);
         printf("Found at offset: 0x%X\n", rich_offset);
+        Sleep(1);
     }
     else {
         printf("\n\033[1;36m[RICH_HEADER]\033[0m\n");
+        Sleep(1);
         printf("Not found.\n");
+        Sleep(1);
     }
 
     // 4. NT_HEADER
@@ -271,65 +304,105 @@ void print_pe_structure(const char* filepath) {
     fread(&pe_sig, sizeof(DWORD), 1, fp);
     if (pe_sig != IMAGE_NT_SIGNATURE) {
         printf("Not a valid PE file (missing PE signature).\n");
+        Sleep(1);
         fclose(fp);
         return;
     }
     printf("\n\033[1;36m[NT_HEADER]\033[0m\n");
+    Sleep(1);
     printf("PE Signature: 0x%08X ('PE\\0\\0')\n", pe_sig);
+    Sleep(1);
 
     // 5. IMAGE_FILE_HEADER
     IMAGE_FILE_HEADER fileHeader;
     fread(&fileHeader, sizeof(IMAGE_FILE_HEADER), 1, fp);
     printf("\n\033[1;36m[IMAGE_FILE_HEADER]\033[0m\n");
+    Sleep(1);
     printf("Machine: 0x%04X\n", fileHeader.Machine);
+    Sleep(1);
     printf("NumberOfSections: %d\n", fileHeader.NumberOfSections);
+    Sleep(1);
     printf("TimeDateStamp: 0x%08X\n", fileHeader.TimeDateStamp);
+    Sleep(1);
     printf("PointerToSymbolTable: 0x%08X\n", fileHeader.PointerToSymbolTable);
+    Sleep(1);
     printf("NumberOfSymbols: %u\n", fileHeader.NumberOfSymbols);
+    Sleep(1);
     printf("SizeOfOptionalHeader: 0x%04X\n", fileHeader.SizeOfOptionalHeader);
+    Sleep(1);
     printf("Characteristics: 0x%04X\n", fileHeader.Characteristics);
+    Sleep(1);
 
     // 6. IMAGE_OPTIONAL_HEADER
     IMAGE_OPTIONAL_HEADER32 optionalHeader;
     fread(&optionalHeader, sizeof(IMAGE_OPTIONAL_HEADER32), 1, fp);
     printf("\n\033[1;36m[IMAGE_OPTIONAL_HEADER32]\033[0m\n");
+    Sleep(1);
     printf("Magic: 0x%04X\n", optionalHeader.Magic);
+    Sleep(1);
     printf("MajorLinkerVersion: %u\n", optionalHeader.MajorLinkerVersion);
+    Sleep(1);
     printf("MinorLinkerVersion: %u\n", optionalHeader.MinorLinkerVersion);
+    Sleep(1);
     printf("SizeOfCode: 0x%08X\n", optionalHeader.SizeOfCode);
+    Sleep(1);
     printf("SizeOfInitializedData: 0x%08X\n", optionalHeader.SizeOfInitializedData);
+    Sleep(1);
     printf("SizeOfUninitializedData: 0x%08X\n", optionalHeader.SizeOfUninitializedData);
+    Sleep(1);
     printf("AddressOfEntryPoint: 0x%08X\n", optionalHeader.AddressOfEntryPoint);
+    Sleep(1);
     printf("BaseOfCode: 0x%08X\n", optionalHeader.BaseOfCode);
+    Sleep(1);
     printf("BaseOfData: 0x%08X\n", optionalHeader.BaseOfData);
+    Sleep(1);
     printf("ImageBase: 0x%08X\n", optionalHeader.ImageBase);
+    Sleep(1);
     printf("SectionAlignment: 0x%08X\n", optionalHeader.SectionAlignment);
+    Sleep(1);
     printf("FileAlignment: 0x%08X\n", optionalHeader.FileAlignment);
+    Sleep(1);
     printf("MajorOperatingSystemVersion: %u\n", optionalHeader.MajorOperatingSystemVersion);
+    Sleep(1);
     printf("MinorOperatingSystemVersion: %u\n", optionalHeader.MinorOperatingSystemVersion);
+    Sleep(1);
     printf("MajorImageVersion: %u\n", optionalHeader.MajorImageVersion);
+    Sleep(1);
     printf("MinorImageVersion: %u\n", optionalHeader.MinorImageVersion);
+    Sleep(1);
     printf("MajorSubsystemVersion: %u\n", optionalHeader.MajorSubsystemVersion);
+    Sleep(1);
     printf("MinorSubsystemVersion: %u\n", optionalHeader.MinorSubsystemVersion);
+    Sleep(1);
     printf("Win32VersionValue: 0x%08X\n", optionalHeader.Win32VersionValue);
+    Sleep(1);
     printf("SizeOfImage: 0x%08X\n", optionalHeader.SizeOfImage);
+    Sleep(1);
     printf("SizeOfHeaders: 0x%08X\n", optionalHeader.SizeOfHeaders);
+    Sleep(1);
     printf("CheckSum: 0x%08X\n", optionalHeader.CheckSum);
+    Sleep(1);
     printf("Subsystem: 0x%04X\n", optionalHeader.Subsystem);
+    Sleep(1);
     printf("DllCharacteristics: 0x%04X\n", optionalHeader.DllCharacteristics);
+    Sleep(1);
     printf("SizeOfStackReserve: 0x%08X\n", optionalHeader.SizeOfStackReserve);
+    Sleep(1);
     printf("SizeOfStackCommit: 0x%08X\n", optionalHeader.SizeOfStackCommit);
+    Sleep(1);
     printf("SizeOfHeapReserve: 0x%08X\n", optionalHeader.SizeOfHeapReserve);
+    Sleep(1);
     printf("SizeOfHeapCommit: 0x%08X\n", optionalHeader.SizeOfHeapCommit);
+    Sleep(1);
     printf("LoaderFlags: 0x%08X\n", optionalHeader.LoaderFlags);
+    Sleep(1);
     printf("NumberOfRvaAndSizes: %u\n", optionalHeader.NumberOfRvaAndSizes);
+    Sleep(1);
 
     // DataDirectory 출력 (일부만)
     for (int i = 0; i < optionalHeader.NumberOfRvaAndSizes && i < 16; i++) {
-        printf("DataDirectory[%d]: RVA=0x%08X, Size=0x%08X\n",
-            i,
-            optionalHeader.DataDirectory[i].VirtualAddress,
-            optionalHeader.DataDirectory[i].Size);
+        printf("DataDirectory[%d]: RVA=0x%08X, Size=0x%08X\n",i, optionalHeader.DataDirectory[i].VirtualAddress, optionalHeader.DataDirectory[i].Size);
+        Sleep(1);
     }
 
     // 7. SECTION_HEADER
@@ -338,15 +411,25 @@ void print_pe_structure(const char* filepath) {
         IMAGE_SECTION_HEADER sectionHeader;
         fread(&sectionHeader, sizeof(IMAGE_SECTION_HEADER), 1, fp);
         printf("[%d] Name: %.8s\n", i + 1, sectionHeader.Name);
+        Sleep(1);
         printf("    VirtualSize: 0x%08X\n", sectionHeader.Misc.VirtualSize);
+        Sleep(1);
         printf("    VirtualAddress: 0x%08X\n", sectionHeader.VirtualAddress);
+        Sleep(1);
         printf("    SizeOfRawData: 0x%08X\n", sectionHeader.SizeOfRawData);
+        Sleep(1);
         printf("    PointerToRawData: 0x%08X\n", sectionHeader.PointerToRawData);
+        Sleep(1);
         printf("    PointerToRelocations: 0x%08X\n", sectionHeader.PointerToRelocations);
+        Sleep(1);
         printf("    PointerToLinenumbers: 0x%08X\n", sectionHeader.PointerToLinenumbers);
+        Sleep(1);
         printf("    NumberOfRelocations: %u\n", sectionHeader.NumberOfRelocations);
+        Sleep(1);
         printf("    NumberOfLinenumbers: %u\n", sectionHeader.NumberOfLinenumbers);
+        Sleep(1);
         printf("    Characteristics: 0x%08X\n", sectionHeader.Characteristics);
+        Sleep(1);
     }
 
     fclose(fp);
