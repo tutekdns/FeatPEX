@@ -9,13 +9,17 @@
 #include <winnt.h>    // PE 파일 구조체 정의
 #include <conio.h>    // sleep 함수 사용을 위한 헤더 (POSIX 표준)
 
+#define MAX_PATH 260         // Windows에서 경로의 최대 길이
+#define PE_SIGNATURE_PATH 32 //확장자 최대 길이
+
+
 int check_retry_or_end();                                                    // 재시도 또는 종료 확인 함수
 int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize); // PE 파일 타입 판별 함수
 static DWORD rva_to_offset(DWORD rva, IMAGE_SECTION_HEADER* sections, int nSections); // RVA를 파일 오프셋으로 변환하는 함수
+static BOOL safe_read_ascii(FILE* fp, DWORD offset, char* outBuf, size_t maxLen, DWORD fileSize); // DLL 이름을 안전하게 읽는 함수
+void read_dll_name(FILE* fp, DWORD rva, IMAGE_SECTION_HEADER* sections, int nSections, char* outBuf, size_t maxLen, DWORD fileSize); // DLL 이름을 읽는 래퍼 함수 (rva -> offset -> 문자열)
 void print_pe_structure(const char* filepath); 				                 // PE 파일 구조 출력 함수
 
-#define MAX_PATH 260         // Windows에서 경로의 최대 길이
-#define PE_SIGNATURE_PATH 32 //확장자 최대 길이
 int main() {
     
     const char* art[] = {
@@ -101,7 +105,7 @@ int main() {
 
     print_pe_structure(input);
 
-
+   
     return 0;
 }
 
@@ -670,3 +674,4 @@ void print_pe_structure(const char* filepath) {
     if (dos_stub) free(dos_stub);
     fclose(fp);
 }
+
