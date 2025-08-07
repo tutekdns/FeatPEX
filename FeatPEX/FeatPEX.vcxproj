@@ -125,6 +125,9 @@
   <ItemGroup>
     <ClCompile Include="FeatPEX.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pe_parser.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
