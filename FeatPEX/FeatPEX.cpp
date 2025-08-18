@@ -14,6 +14,20 @@
 
 int check_retry_or_end();
 
+// ========================= Release 빌드: 디버그 정보 제거 & 최적화 =========================
+// NDEBUG는 보통 Release에서 정의됨.
+#ifdef NDEBUG
+// PDB/디버그 정보 생성 금지
+#pragma comment(linker, "/DEBUG:NONE")
+// 미사용 코드/데이터 제거 및 동일 함수 병합 → exe 사이즈 축소
+#pragma comment(linker, "/OPT:REF")
+#pragma comment(linker, "/OPT:ICF")
+// 증분 링크 비활성화(릴리즈 권장)
+#pragma comment(linker, "/INCREMENTAL:NO")
+#endif
+// ============================================================================================
+
+
 // ========================= 2GB 제한 설정 (x86/x64 공통) =========================
 // x86(32-bit) 빌드에서는 LARGEADDRESSAWARE 비활성화 → 유저 VA 2GB 고정
 #ifndef _WIN64
@@ -55,22 +69,7 @@ static BOOL set_process_memory_limit_gb(double gb) {
 
 // (선택) 기대치 안내/자기진단
 static void assert_2gb_user_mode_expectation(void) {
-#if defined(_WIN64)
-    fprintf(stderr, "\033[1;36m[Info]\033[0m x64 build: VA window는 넓지만 commit limit 2GB가 적용됩니다.\n");
-#else
-    HMODULE h = GetModuleHandleW(NULL);
-    BYTE* base = (BYTE*)h;
-    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
-    if (dos && dos->e_magic == IMAGE_DOS_SIGNATURE) {
-        IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
-        if (nt && nt->Signature == IMAGE_NT_SIGNATURE) {
-            if (nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) {
-                fprintf(stderr, "\033[1;33m[Warn]\033[0m x86 LAA가 켜져 있습니다. "
-                    "/LARGEADDRESSAWARE:NO 로 빌드해 유저 VA 2GB를 보장하세요.\n");
-            }
-        }
-    }
-#endif
+
 }
 // ============================================================================
 
