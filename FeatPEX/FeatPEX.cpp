@@ -173,6 +173,8 @@ int main(int argc, char* argv[]) {
     // (선택) 기대치 안내
     assert_2gb_user_mode_expectation();
 
+    SetConsoleTitleW(L"FeatPEX.exe");
+
 RESTART_ALL:
     // ===== 배너 =====
     {
