@@ -1,5 +1,4 @@
-﻿#include <stdio.h>
-#include <iostream>
+﻿#include <iostream>
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -324,7 +323,10 @@ RESTART_ALL:
     printf("You entered: %s\n", input);
     printf("\033[1;36mStarting analysis...\033[0m\n");
 
-    detect_pe_type(input, peType, sizeof(peType));
+    if (!detect_pe_type_advanced(input, peType, sizeof(peType))) {
+        // 고급 판별이 실패하면 기존 간단 판별로 폴백
+        detect_pe_type(input, peType, sizeof(peType));
+    }
     printf("\033[1;33m[*] PE Type: %s\033[0m\n", peType[0] ? peType : "unknown");
 
     if (!load_pe_file(input, pe)) {
