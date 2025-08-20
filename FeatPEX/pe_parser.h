@@ -961,27 +961,271 @@ double calculate_entropy(const BYTE* data, DWORD size) {
     return ent;
 }
 
-// --------------------- PE 타입 판별 ---------------------
-int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize) {
-    FILE* fp = NULL;
-    if (fopen_s(&fp, filepath, "rb") != 0 || fp == NULL) { printf("\033[1;31m[Error] Cannot open file for PE type detection: %s\033[0m\n", filepath); slow_line(); return 0; }
-    BYTE mz[2] = { 0 };
-    if (fread(mz, 1, 2, fp) != 2 || mz[0] != 'M' || mz[1] != 'Z') { fclose(fp); return 0; }
+static int peutil_looks_like_coff_obj(FILE* fp) {
+    long pos = ftell(fp);
+    rewind(fp);
 
-    DWORD pe_offset = 0; fseek(fp, 0x3C, SEEK_SET); if (fread(&pe_offset, sizeof(DWORD), 1, fp) != 1) { fclose(fp); return 0; }
-    fseek(fp, pe_offset, SEEK_SET);
-    BYTE pe_sig[4] = { 0 };
-    if (fread(pe_sig, 1, 4, fp) != 4 || pe_sig[0] != 'P' || pe_sig[1] != 'E' || pe_sig[2] != 0 || pe_sig[3] != 0) { fclose(fp); return 0; }
+    IMAGE_FILE_HEADER fh = { 0 };
+    if (fread(&fh, 1, sizeof(fh), fp) != sizeof(fh)) { fseek(fp, pos, SEEK_SET); return 0; }
 
-    IMAGE_FILE_HEADER fileHeader; if (fread(&fileHeader, sizeof(IMAGE_FILE_HEADER), 1, fp) != 1) { fclose(fp); return 0; }
-    const char* type = "unknown";
-    if (fileHeader.Characteristics & IMAGE_FILE_DLL) type = "dll";
-    else if (fileHeader.Characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) type = "exe";
-    else if (fileHeader.Characteristics & 0x1000) type = "sys";
-    if (out_ext && ext_bufsize > 0) strcpy_s(out_ext, ext_bufsize, type);
-    fclose(fp);
+    // COFF OBJ: OptionalHeader 크기가 0, Section 개수 범위, Machine 유효
+    if (fh.SizeOfOptionalHeader != 0) { fseek(fp, pos, SEEK_SET); return 0; }
+    if (fh.NumberOfSections == 0 || fh.NumberOfSections > 96) { fseek(fp, pos, SEEK_SET); return 0; }
+    if (fh.Machine == 0) { fseek(fp, pos, SEEK_SET); return 0; }
+
+    fseek(fp, pos, SEEK_SET);
     return 1;
 }
+
+static const char* peutil_lower_ext(const char* p) {
+    static char buf[8]; // 짧은 확장자 버퍼
+    buf[0] = 0;
+    if (!p) return buf;
+
+    const char* dot = NULL;
+    for (const char* q = p; *q; ++q) if (*q == '.') dot = q;
+    if (!dot || !dot[1]) return buf;
+
+    size_t n = 0;
+    for (const char* q = dot + 1; *q && n < sizeof(buf) - 1; ++q) {
+        unsigned char c = (unsigned char)*q;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        buf[n++] = (char)c;
+    }
+    buf[n] = 0;
+    return buf;
+}
+
+static int peutil_has_export_name(const PE_FILE* pe, const char* target) {
+    if (!pe || !target) return 0;
+
+    IMAGE_DATA_DIRECTORY dir = pe->is64Bit
+        ? pe->optionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
+        : pe->optionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+
+    if (!dir.VirtualAddress || !dir.Size) return 0;
+    DWORD expOff = rva_to_offset_pe(pe, dir.VirtualAddress);
+    if (!expOff || expOff + sizeof(IMAGE_EXPORT_DIRECTORY) > pe->size) return 0;
+
+    IMAGE_EXPORT_DIRECTORY* exp = (IMAGE_EXPORT_DIRECTORY*)(pe->data + expOff);
+    DWORD nameArrayOff = rva_to_offset_pe(pe, exp->AddressOfNames);
+    if (!nameArrayOff) return 0;
+
+    for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
+        ULONGLONG ptr = (ULONGLONG)nameArrayOff + (ULONGLONG)i * sizeof(DWORD);
+        if (ptr + sizeof(DWORD) > pe->size) break;
+
+        DWORD nameRVA = *(DWORD*)(pe->data + ptr);
+        DWORD nameOff = rva_to_offset_pe(pe, nameRVA);
+        if (!nameOff || nameOff >= pe->size) continue;
+
+        const char* name = (const char*)(pe->data + nameOff);
+#ifdef _MSC_VER
+        if (_stricmp(name, target) == 0) return 1;
+#else
+        if (strcasecmp(name, target) == 0) return 1;
+#endif
+    }
+    return 0;
+}
+
+// --------------------- PE 타입 판별 ---------------------
+int detect_pe_type(const char* filepath, char* out_ext, size_t ext_bufsize)
+{
+    if (out_ext && ext_bufsize) out_ext[0] = '\0';
+    if (!filepath) return 0;
+
+    FILE* fp = NULL;
+    if (fopen_s(&fp, filepath, "rb") != 0 || fp == NULL) {
+        printf("\033[1;31m[Error] Cannot open file for PE type detection: %s\033[0m\n", filepath);
+        slow_line();
+        return 0;
+    }
+
+    // 1) COFF OBJ 먼저: 선두에 MZ 없고 COFF 헤더 형태면 obj
+    BYTE mz2[2] = { 0 };
+    if (fread(mz2, 1, 2, fp) != 2) {
+        fclose(fp);
+        return 0;
+    }
+    if (!(mz2[0] == 'M' && mz2[1] == 'Z')) {
+        if (peutil_looks_like_coff_obj(fp)) {
+            if (out_ext && ext_bufsize) strcpy_s(out_ext, ext_bufsize, "obj");
+            fclose(fp);
+            return 1;
+        }
+        else {
+            fclose(fp);
+            return 0; // 비 PE/비 OBJ
+        }
+    }
+
+    // 2) NT 서명 확인
+    DWORD pe_offset = 0;
+    fseek(fp, 0x3C, SEEK_SET);
+    if (fread(&pe_offset, sizeof(DWORD), 1, fp) != 1) { fclose(fp); return 0; }
+
+    fseek(fp, pe_offset, SEEK_SET);
+    BYTE pe_sig[4] = { 0 };
+    if (fread(pe_sig, 1, 4, fp) != 4 || pe_sig[0] != 'P' || pe_sig[1] != 'E' || pe_sig[2] != 0 || pe_sig[3] != 0) {
+        fclose(fp);
+        return 0;
+    }
+
+    // FILE_HEADER 읽기
+    IMAGE_FILE_HEADER fileHeader;
+    if (fread(&fileHeader, sizeof(IMAGE_FILE_HEADER), 1, fp) != 1) { fclose(fp); return 0; }
+
+    // Optional Header의 Magic 미리 엿봐서 서브시스템 확보(로더 실패시 fallback)
+    WORD magic = 0;
+    (void)fread(&magic, sizeof(WORD), 1, fp);
+    fseek(fp, -(long)sizeof(WORD), SEEK_CUR); // 위치 복원
+
+    WORD subsystem_fallback = 0;
+    if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        IMAGE_OPTIONAL_HEADER32 opt32;
+        if (fread(&opt32, sizeof(opt32), 1, fp) == 1) {
+            subsystem_fallback = opt32.Subsystem;
+        }
+    }
+    else if (magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        IMAGE_OPTIONAL_HEADER64 opt64;
+        if (fread(&opt64, sizeof(opt64), 1, fp) == 1) {
+            subsystem_fallback = opt64.Subsystem;
+        }
+    }
+    fclose(fp);
+
+    // 3) 고급 판정: 로더로 파싱하여 더 정밀하게
+    const char* label = "exe";
+    PE_FILE pe = { 0 };
+    int loader_ok = load_pe_file(filepath, &pe);
+
+    if (loader_ok) {
+        const IMAGE_FILE_HEADER* fh = pe.fileHeader;
+        if (!fh) {
+            free_pe_file(&pe);
+            return 0;
+        }
+
+        // 서브시스템
+        WORD subsystem = 0;
+        if (pe.is64Bit && pe.optionalHeader64) subsystem = pe.optionalHeader64->Subsystem;
+        else if (!pe.is64Bit && pe.optionalHeader32) subsystem = pe.optionalHeader32->Subsystem;
+        else subsystem = subsystem_fallback;
+
+        // DLL/EXE/SYS 1차 분기
+        if ((fh->Characteristics & IMAGE_FILE_DLL) == IMAGE_FILE_DLL) {
+            label = "dll";
+
+            // Export 기반 세분화
+            if (peutil_has_export_name(&pe, "DllRegisterServer") || peutil_has_export_name(&pe, "DllInstall")) {
+                label = "ocx";
+            }
+            if (peutil_has_export_name(&pe, "CPlApplet")) {
+                label = "cpl";
+            }
+        }
+        else {
+            // 드라이버/네이티브 우선
+            if ((fh->Characteristics & IMAGE_FILE_SYSTEM) || subsystem == IMAGE_SUBSYSTEM_NATIVE) {
+                label = "sys";
+            }
+            else {
+                label = "exe";
+            }
+        }
+
+        // 4) 파일명 확장자 기반 보정
+        const char* ext = peutil_lower_ext(filepath);
+        if (ext[0]) {
+#ifdef _MSC_VER
+            if (_stricmp(ext, "scr") == 0 && _stricmp(label, "sys") != 0 && (fh->Characteristics & IMAGE_FILE_DLL) == 0) {
+                label = "scr";  // 화면보호기
+            }
+            if (_stricmp(ext, "drv") == 0 && _stricmp(label, "sys") == 0) {
+                label = "drv";  // 레거시 드라이버 파일명 보정
+            }
+            if (_stricmp(ext, "vxd") == 0 && _stricmp(label, "sys") == 0) {
+                label = "vxd";  // 구형 가상 장치 드라이버
+            }
+            if (_stricmp(ext, "ocx") == 0 && _stricmp(label, "dll") == 0) {
+                label = "ocx";
+            }
+            if (_stricmp(ext, "cpl") == 0 && _stricmp(label, "dll") == 0) {
+                label = "cpl";
+            }
+#else
+            if (strcasecmp(ext, "scr") == 0 && strcasecmp(label, "sys") != 0 && (fh->Characteristics & IMAGE_FILE_DLL) == 0) {
+                label = "scr";
+            }
+            if (strcasecmp(ext, "drv") == 0 && strcasecmp(label, "sys") == 0) {
+                label = "drv";
+            }
+            if (strcasecmp(ext, "vxd") == 0 && strcasecmp(label, "sys") == 0) {
+                label = "vxd";
+            }
+            if (strcasecmp(ext, "ocx") == 0 && strcasecmp(label, "dll") == 0) {
+                label = "ocx";
+            }
+            if (strcasecmp(ext, "cpl") == 0 && strcasecmp(label, "dll") == 0) {
+                label = "cpl";
+            }
+#endif
+        }
+
+        if (out_ext && ext_bufsize) strcpy_s(out_ext, ext_bufsize, label);
+        free_pe_file(&pe);
+        return 1;
+    }
+    else {
+        // 3-보호: 로더 실패 시 간소 로직으로 판정 (초기 버전 로직 결합)
+        const char* type_simple = "exe";
+        WORD subsystem = subsystem_fallback;
+
+        // 파일 확장자
+        const char* ext = peutil_lower_ext(filepath);
+
+        if (fileHeader.Characteristics & IMAGE_FILE_DLL) {
+            if (ext[0]) {
+#ifdef _MSC_VER
+                if (_stricmp(ext, "ocx") == 0) type_simple = "ocx";
+                else if (_stricmp(ext, "cpl") == 0) type_simple = "cpl";
+                else type_simple = "dll";
+#else
+                if (strcasecmp(ext, "ocx") == 0) type_simple = "ocx";
+                else if (strcasecmp(ext, "cpl") == 0) type_simple = "cpl";
+                else type_simple = "dll";
+#endif
+            }
+            else {
+                type_simple = "dll";
+            }
+        }
+        else if (subsystem == IMAGE_SUBSYSTEM_NATIVE) {
+#ifdef _MSC_VER
+            if (ext[0] && _stricmp(ext, "sys") == 0) type_simple = "sys";
+            else type_simple = "exe";
+#else
+            if (ext[0] && strcasecmp(ext, "sys") == 0) type_simple = "sys";
+            else type_simple = "exe";
+#endif
+        }
+        else {
+#ifdef _MSC_VER
+            if (ext[0] && _stricmp(ext, "scr") == 0) type_simple = "scr";
+            else type_simple = "exe";
+#else
+            if (ext[0] && strcasecmp(ext, "scr") == 0) type_simple = "scr";
+            else type_simple = "exe";
+#endif
+        }
+
+        if (out_ext && ext_bufsize) strcpy_s(out_ext, ext_bufsize, type_simple);
+        return 1;
+    }
+}
+
 
 // --------------------- 인코딩 ---------------------
 void set_console_encoding() { SetConsoleOutputCP(CP_UTF8); SetConsoleCP(CP_UTF8); }
@@ -1788,179 +2032,6 @@ static int write_features_csv(const char* out_csv_path,
     ); slow_line();
 
     fclose(fp);
-    return 1;
-}
-static int pe_has_export_name(const PE_FILE* pe, const char* target) {
-    if (!pe || !target) return 0;
-
-    IMAGE_DATA_DIRECTORY dir = pe->is64Bit
-        ? pe->optionalHeader64->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT]
-        : pe->optionalHeader32->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-
-    if (!dir.VirtualAddress || !dir.Size) return 0;
-    DWORD expOff = rva_to_offset_pe(pe, dir.VirtualAddress);
-    if (!expOff || expOff + sizeof(IMAGE_EXPORT_DIRECTORY) > pe->size) return 0;
-
-    IMAGE_EXPORT_DIRECTORY* exp = (IMAGE_EXPORT_DIRECTORY*)(pe->data + expOff);
-    DWORD nameArrayOff = rva_to_offset_pe(pe, exp->AddressOfNames);
-    if (!nameArrayOff) return 0;
-
-    for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
-        ULONGLONG ptr = (ULONGLONG)nameArrayOff + (ULONGLONG)i * sizeof(DWORD);
-        if (ptr + sizeof(DWORD) > pe->size) break;
-        DWORD nameRVA = *(DWORD*)(pe->data + ptr);
-        DWORD nameOff = rva_to_offset_pe(pe, nameRVA);
-        if (!nameOff || nameOff >= pe->size) continue;
-
-        const char* name = (const char*)(pe->data + nameOff);
-#ifdef _MSC_VER
-        if (_stricmp(name, target) == 0) return 1;
-#else
-        if (strcasecmp(name, target) == 0) return 1;
-#endif
-    }
-    return 0;
-}
-
-// --- 파일 경로에서 소문자 확장자 추출 (fallback 보정용)
-static const char* lower_ext_from_path(const char* p) {
-    static char buf[8];
-    buf[0] = 0;
-    if (!p) return buf;
-    const char* dot = NULL;
-    for (const char* q = p; *q; ++q) if (*q == '.') dot = q;
-    if (!dot || !dot[1]) return buf;
-    size_t n = 0;
-    for (const char* q = dot + 1; *q && n < sizeof(buf) - 1; ++q) {
-        char c = *q;
-        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        buf[n++] = c;
-    }
-    buf[n] = 0;
-    return buf;
-}
-
-// --- COFF OBJ heuristics: 선두가 곧 IMAGE_FILE_HEADER, OptionalHeader==0
-static int looks_like_coff_obj(FILE* fp) {
-    long pos = ftell(fp);
-    rewind(fp);
-
-    IMAGE_FILE_HEADER fh = { 0 };
-    if (fread(&fh, 1, sizeof(fh), fp) != sizeof(fh)) { fseek(fp, pos, SEEK_SET); return 0; }
-    if (fh.NumberOfSections == 0 || fh.NumberOfSections > 96) { fseek(fp, pos, SEEK_SET); return 0; }
-    if (fh.SizeOfOptionalHeader != 0) { fseek(fp, pos, SEEK_SET); return 0; } // OBJ는 OptionalHeader 없음
-    if (fh.Machine == 0) { fseek(fp, pos, SEEK_SET); return 0; }
-
-    fseek(fp, pos, SEEK_SET);
-    return 1;
-}
-
-// --- 고급 타입 판별기: exe/scr/dll/ocx/cpl/sys/drv/obj
-// 성공 시 1, 실패/비PE 시 0. out_ext 에 소문자 문자열 저장.
-static int detect_pe_type_advanced(const char* filepath, char* out_ext, size_t ext_bufsize) {
-    if (out_ext && ext_bufsize) out_ext[0] = '\0';
-    if (!filepath) return 0;
-
-    FILE* fp = NULL;
-    if (fopen_s(&fp, filepath, "rb") != 0 || !fp) return 0;
-
-    // 1) COFF OBJ 먼저: 선두에 MZ 없고, COFF header 형태이면 obj
-    BYTE mz2[2] = { 0 };
-    if (fread(mz2, 1, 2, fp) != 2) { fclose(fp); return 0; }
-    if (!(mz2[0] == 'M' && mz2[1] == 'Z')) {
-        if (looks_like_coff_obj(fp)) {
-            if (out_ext && ext_bufsize) strcpy_s(out_ext, ext_bufsize, "obj");
-            fclose(fp);
-            return 1;
-        }
-        else {
-            fclose(fp);
-            return 0; // 비 PE/비 OBJ
-        }
-    }
-
-    // 2) NT 서명 확인
-    DWORD peoff = 0; fseek(fp, 0x3C, SEEK_SET);
-    if (fread(&peoff, sizeof(DWORD), 1, fp) != 1) { fclose(fp); return 0; }
-    fseek(fp, peoff, SEEK_SET);
-    BYTE sig[4] = { 0 };
-    if (fread(sig, 1, 4, fp) != 4 || sig[0] != 'P' || sig[1] != 'E' || sig[2] != 0 || sig[3] != 0) {
-        fclose(fp); return 0;
-    }
-    fclose(fp);
-
-    // 3) 이미 로더가 있으니 그걸로 파싱
-    PE_FILE pe = { 0 };
-    if (!load_pe_file(filepath, &pe)) return 0;
-
-    const IMAGE_FILE_HEADER* fh = pe.fileHeader;
-    if (!fh) { free_pe_file(&pe); return 0; }
-
-    // 기본값: exe
-    const char* label = "exe";
-
-    // Subsystem 읽기
-    WORD subsystem = 0;
-    if (pe.is64Bit && pe.optionalHeader64) subsystem = pe.optionalHeader64->Subsystem;
-    else if (!pe.is64Bit && pe.optionalHeader32) subsystem = pe.optionalHeader32->Subsystem;
-
-    if ((fh->Characteristics & IMAGE_FILE_DLL) == IMAGE_FILE_DLL) {
-        // DLL 기본
-        label = "dll";
-
-        // ActiveX/COM: DllRegisterServer/DllInstall 있으면 ocx로 간주
-        if (pe_has_export_name(&pe, "DllRegisterServer") || pe_has_export_name(&pe, "DllInstall")) {
-            label = "ocx";
-        }
-        // 제어판: CPlApplet 있으면 cpl
-        if (pe_has_export_name(&pe, "CPlApplet")) {
-            label = "cpl";
-        }
-    }
-    else {
-        // 실행 이미지: Native(드라이버) 우선
-        if ((fh->Characteristics & IMAGE_FILE_SYSTEM) || subsystem == IMAGE_SUBSYSTEM_NATIVE) {
-            label = "sys";
-        }
-        else {
-            label = "exe";
-        }
-    }
-
-    // 4) 파일명 확장자 기반 보정 (모호한 case)
-    const char* ext = lower_ext_from_path(filepath);
-    if (ext[0]) {
-#ifdef _MSC_VER
-        if (_stricmp(ext, "scr") == 0 && _stricmp(label, "sys") != 0 && (fh->Characteristics & IMAGE_FILE_DLL) == 0) {
-            label = "scr";  // 화면보호기: 헤더만으론 구분 어려움
-        }
-        if (_stricmp(ext, "drv") == 0 && _stricmp(label, "sys") == 0) {
-            label = "drv";  // 레거시 드라이버 확장자
-        }
-        if (_stricmp(ext, "ocx") == 0 && _stricmp(label, "dll") == 0) {
-            label = "ocx";
-        }
-        if (_stricmp(ext, "cpl") == 0 && _stricmp(label, "dll") == 0) {
-            label = "cpl";
-        }
-#else
-        if (strcasecmp(ext, "scr") == 0 && strcasecmp(label, "sys") != 0 && (fh->Characteristics & IMAGE_FILE_DLL) == 0) {
-            label = "scr";
-        }
-        if (strcasecmp(ext, "drv") == 0 && strcasecmp(label, "sys") == 0) {
-            label = "drv";
-        }
-        if (strcasecmp(ext, "ocx") == 0 && strcasecmp(label, "dll") == 0) {
-            label = "ocx";
-        }
-        if (strcasecmp(ext, "cpl") == 0 && strcasecmp(label, "dll") == 0) {
-            label = "cpl";
-        }
-#endif
-    }
-
-    if (out_ext && ext_bufsize) strcpy_s(out_ext, ext_bufsize, label);
-    free_pe_file(&pe);
     return 1;
 }
 
